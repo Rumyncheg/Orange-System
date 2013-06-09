@@ -1,6 +1,6 @@
 ; ==========================================
-; pmtest5a.asm
-; 编译方法：nasm pmtest5a.asm -o pmtest5a.com
+; pmtest5c.asm
+; 编译方法：nasm pmtest5c.asm -o pmtest5c.com
 ; ==========================================
 
 %include	"pm.inc"	; 常量, 宏, 以及一些说明
@@ -16,16 +16,16 @@ LABEL_DESC_NORMAL:     Descriptor 0,           0ffffh, DA_DRW    ; Normal 描述
 LABEL_DESC_CODE32:     Descriptor 0,   SegCode32Len-1, DA_C+DA_32; 非一致代码段,32
 LABEL_DESC_CODE16:     Descriptor 0,           0ffffh, DA_C      ; 非一致代码段,16
 LABEL_DESC_CODE_DEST:  Descriptor 0, SegCodeDestLen-1, DA_C+DA_32; 非一致代码段,32
-LABEL_DESC_CODE_RING3: Descriptor 0,SegCodeRing3Len-1, DA_C+DA_32+DA_DPL3;ring3
-LABEL_DESC_DATA:       Descriptor 0,        DataLen-1, DA_DRW    ; Data
+LABEL_DESC_CODE_RING3: Descriptor 0,SegCodeRing3Len-1, DA_C+DA_32+DA_DPL3
+LABEL_DESC_DATA:       Descriptor 0,        DataLen-1, DA_DRW    ; Data	
 LABEL_DESC_STACK:      Descriptor 0,       TopOfStack, DA_DRWA+DA_32;Stack, 32 位
 LABEL_DESC_STACK3:     Descriptor 0,      TopOfStack3, DA_DRWA+DA_32+DA_DPL3
 LABEL_DESC_LDT:        Descriptor 0,         LDTLen-1, DA_LDT    ; LDT
-
-LABEL_DESC_VIDEO:      Descriptor 0B8000h,     0ffffh, DA_DRW+DA_DPL3;video段DPL修改为3
+LABEL_DESC_TSS:        Descriptor 0,          TSSLen-1, DA_386TSS
+LABEL_DESC_VIDEO:      Descriptor 0B8000h,     0ffffh, DA_DRW+DA_DPL3
 
 ; 门                               目标选择子,偏移,DCount, 属性
-LABEL_CALL_GATE_TEST: Gate SelectorCodeDest,   0,     0, DA_386CGate+DA_DPL0
+LABEL_CALL_GATE_TEST: Gate SelectorCodeDest,   0,     0, DA_386CGate+DA_DPL3
 ; GDT 结束
 
 GdtLen		equ	$ - LABEL_GDT	; GDT长度
@@ -42,9 +42,10 @@ SelectorData		equ	LABEL_DESC_DATA		- LABEL_GDT
 SelectorStack		equ	LABEL_DESC_STACK	- LABEL_GDT
 SelectorStack3		equ	LABEL_DESC_STACK3	- LABEL_GDT + SA_RPL3
 SelectorLDT		equ	LABEL_DESC_LDT		- LABEL_GDT
+SelectorTSS		equ	LABEL_DESC_TSS		- LABEL_GDT
 SelectorVideo		equ	LABEL_DESC_VIDEO	- LABEL_GDT
 
-SelectorCallGateTest	equ	LABEL_CALL_GATE_TEST	- LABEL_GDT
+SelectorCallGateTest	equ	LABEL_CALL_GATE_TEST	- LABEL_GDT + SA_RPL3
 ; END of [SECTION .gdt]
 
 [SECTION .data1]	 ; 数据段
@@ -80,6 +81,42 @@ LABEL_STACK3:
 	times 512 db 0
 TopOfStack3	equ	$ - LABEL_STACK3 - 1
 ; END of [SECTION .s3]
+
+; TSS
+[SECTION .tss]
+ALIGN	32
+[BITS	32]
+LABEL_TSS:
+		DD	0			; Back  上一任务链接
+		DD	TopOfStack		; 0 级堆栈
+		DD	SelectorStack		; 
+		DD	0			; 1 级堆栈
+		DD	0			; 
+		DD	0			; 2 级堆栈
+		DD	0			; 
+		DD	0			; CR3
+		DD	0			; EIP
+		DD	0			; EFLAGS
+		DD	0			; EAX
+		DD	0			; ECX
+		DD	0			; EDX
+		DD	0			; EBX
+		DD	0			; ESP
+		DD	0			; EBP
+		DD	0			; ESI
+		DD	0			; EDI
+		DD	0			; ES
+		DD	0			; CS
+		DD	0			; SS
+		DD	0			; DS
+		DD	0			; FS
+		DD	0			; GS
+		DD	0			; LDT
+		DW	0			; 调试陷阱标志
+		DW	$ - LABEL_TSS + 2	; I/O位图基址
+		DB	0ffh			; I/O位图结束标志
+TSSLen		equ	$ - LABEL_TSS
+
 
 [SECTION .s16]
 [BITS	16]
@@ -183,6 +220,16 @@ LABEL_BEGIN:
 	mov	byte [LABEL_DESC_CODE_RING3 + 4], al
 	mov	byte [LABEL_DESC_CODE_RING3 + 7], ah
 
+	; 初始化 TSS 描述符
+	xor	eax, eax
+	mov	ax, ds
+	shl	eax, 4
+	add	eax, LABEL_TSS
+	mov	word [LABEL_DESC_TSS + 2], ax
+	shr	eax, 16
+	mov	byte [LABEL_DESC_TSS + 4], al
+	mov	byte [LABEL_DESC_TSS + 7], ah
+
 	; 为加载 GDTR 作准备
 	xor	eax, eax
 	mov	ax, ds
@@ -263,11 +310,16 @@ LABEL_SEG_CODE32:
 
 	call	DispReturn
 
-	push	SelectorStack3;目标ss（选择子）
-	push	TopOfStack3;目标esp
-	push	SelectorCodeRing3;目标cs（选择子）
-	push	0 ;目标eip
-	retf	;进入ring3
+	mov	ax, SelectorTSS
+	ltr	ax
+
+	push	SelectorStack3
+	push	TopOfStack3
+	push	SelectorCodeRing3
+	push	0
+	retf
+
+	ud2	; should never arrive here
 
 	; 测试调用门（无特权级变换），将打印字母 'C'
 	call	SelectorCallGateTest:0
@@ -388,6 +440,8 @@ LABEL_CODE_RING3:
 	mov	ah, 0Ch
 	mov	al, '3'
 	mov	[gs:edi], ax
+
+	call	SelectorCallGateTest:0
 
 	jmp	$
 SegCodeRing3Len	equ	$ - LABEL_CODE_RING3

@@ -324,6 +324,6 @@ LABEL_SEG_CODE16:
 LABEL_GO_BACK_TO_REAL:
 	jmp	0:LABEL_REAL_ENTRY	;图3.9,实模式下长跳转指令（指令长度3）。能正确跳回
 
-Code16Len	equ	$ - LABEL_SEG_CODE16
+Code16Len	equ	$ - LABEL_SEG_CODE16;[LABEL_GO_BACK_TO_REAL+3]?
 
 ; END of [SECTION .s16code]
